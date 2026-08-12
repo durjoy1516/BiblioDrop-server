@@ -16,11 +16,11 @@ const seedDatabase = async () => {
     await Book.deleteMany({});
     console.log("Existing users & books cleared.");
 
-    // 1. Create Admin User
-    const adminPassword = await bcrypt.hash("admin123", 10);
+    // 1. Create Admin User (Requirement অনুযায়ী Updated Credentials)
+    const adminPassword = await bcrypt.hash("Admin@123", 10);
     const admin = await User.create({
       name: "Super Admin",
-      email: "admin@bibliodrop.com",
+      email: "admin@gmail.com",
       password: adminPassword,
       role: "admin",
       photoURL: "https://images.unsplash.com/photo-1535713875002-d1d0cf377fde",
@@ -30,7 +30,7 @@ const seedDatabase = async () => {
     const libPassword = await bcrypt.hash("lib12345", 10);
     const librarian = await User.create({
       name: "John Librarian",
-      email: "librarian@bibliodrop.com",
+      email: "librarian@gmail.com",
       password: libPassword,
       role: "librarian",
       photoURL: "https://images.unsplash.com/photo-1494790108377-be9c29b29330",
@@ -72,10 +72,10 @@ const seedDatabase = async () => {
 
     console.log("✅ Database Seeded Successfully!");
     console.log("-----------------------------------------");
-    console.log("Admin Email: admin@bibliodrop.com | Pass: admin123");
-    console.log("Librarian Email: librarian@bibliodrop.com | Pass: lib12345");
+    console.log("Admin Email: admin@gmail.com | Pass: Admin@123");
+    console.log("Librarian Email: librarian@gmail.com | Pass: lib12345");
     console.log("-----------------------------------------");
-    
+
     process.exit(0);
   } catch (error) {
     console.error("❌ Seeding Error:", error.message);

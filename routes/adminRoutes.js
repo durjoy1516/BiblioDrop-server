@@ -1,203 +1,527 @@
 const express = require("express");
+const mongoose = require("mongoose");
+
 const User = require("../models/User");
 const Book = require("../models/Book");
 const Delivery = require("../models/Delivery");
 const Transaction = require("../models/Transaction");
+
 const { verifyToken } = require("../middlewares/authMiddleware");
 const { verifyRole } = require("../middlewares/roleMiddleware");
 
 const router = express.Router();
 
-// সব Admin Route এর জন্য Global Middleware Protection
-router.use(verifyToken, verifyRole("admin"));
+router.use(
+  verifyToken,
+  verifyRole("admin")
+);
 
-// ==========================================
-// 📊 DASHBOARD STATS API
-// ==========================================
+// =====================================================
+// ADMIN STATS
+// =====================================================
 
-// ১. অ্যাডমিন ড্যাশবোর্ড স্ট্যাটস (এখানে অ্যাডমিন ডাটাবেজের সব বইয়ের সংখ্যা দেখতে পাবে)
 router.get("/stats", async (req, res) => {
   try {
-    const totalUsers = await User.countDocuments();
-    const totalLibrarians = await User.countDocuments({ role: "librarian" });
-    
-    // অ্যাডমিন প্রজেক্টের সব বইয়ের হিসাব পাবে (Pending + Published + Unpublished)
-    const totalBooks = await Book.countDocuments(); 
-    
-    const totalDeliveries = await Delivery.countDocuments({ status: "Delivered" });
+    const totalUsers =
+      await User.countDocuments();
 
-    // মোট রেভিনিউ / লেনদেন হিসাব
-    let totalRevenue = 0;
-    try {
-      const transactions = await Transaction.find();
-      totalRevenue = transactions.reduce((sum, tx) => sum + (Number(tx.amount) || 0), 0);
-    } catch (e) {
-      totalRevenue = 0;
-    }
+    const totalLibrarians =
+      await User.countDocuments({
+        role: "librarian",
+      });
 
-    res.json({ 
-      totalUsers, 
-      totalLibrarians, 
-      totalBooks, 
-      totalDeliveries, 
-      totalRevenue 
+    const totalBooks =
+      await Book.countDocuments();
+
+    const totalDeliveries =
+      await Delivery.countDocuments({
+        status: "Delivered",
+      });
+
+    const revenueData =
+      await Transaction.aggregate([
+        {
+          $match: {
+            status: "completed",
+          },
+        },
+        {
+          $group: {
+            _id: null,
+            total: {
+              $sum: "$amount",
+            },
+          },
+        },
+      ]);
+
+    const totalRevenue =
+      revenueData[0]?.total || 0;
+
+    const categoryStats =
+      await Book.aggregate([
+        {
+          $group: {
+            _id: "$category",
+            value: {
+              $sum: 1,
+            },
+          },
+        },
+        {
+          $project: {
+            _id: 0,
+            name: "$_id",
+            value: 1,
+          },
+        },
+        {
+          $sort: {
+            value: -1,
+          },
+        },
+      ]);
+
+    res.json({
+      success: true,
+      stats: {
+        totalUsers,
+        totalLibrarians,
+        totalBooks,
+        totalDeliveries,
+        totalRevenue,
+      },
+      categoryStats,
     });
-  } catch (err) {
-    res.status(500).json({ message: err.message });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: error.message,
+    });
   }
 });
 
-// ==========================================
-// 👥 USER MANAGEMENT ROUTES
-// ==========================================
+// =====================================================
+// ALL USERS
+// =====================================================
 
-// ২. সব ইউজারের তালিকা
 router.get("/users", async (req, res) => {
   try {
-    const users = await User.find().select("-password").sort({ createdAt: -1 });
-    res.json(users);
-  } catch (err) {
-    res.status(500).json({ message: err.message });
+    const users =
+      await User.find()
+        .select("-password")
+        .sort({ createdAt: -1 });
+
+    res.json({
+      success: true,
+      users,
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: error.message,
+    });
   }
 });
 
-// ৩. ইউজারের রোল পরিবর্তন (User / Librarian / Admin)
-router.patch("/users/:id/role", async (req, res) => {
-  try {
-    const { role } = req.body;
+// =====================================================
+// CHANGE USER ROLE
+// =====================================================
 
-    if (!["user", "librarian", "admin"].includes(role)) {
-      return res.status(400).json({ message: "Invalid role specified" });
+router.patch(
+  "/users/:id/role",
+  async (req, res) => {
+    try {
+      const { role } = req.body;
+
+      if (
+        !["user", "librarian", "admin"].includes(
+          role
+        )
+      ) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid role.",
+        });
+      }
+
+      if (req.params.id === req.user.id) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "You cannot change your own admin role.",
+        });
+      }
+
+      const user =
+        await User.findByIdAndUpdate(
+          req.params.id,
+          { role },
+          {
+            new: true,
+            runValidators: true,
+          }
+        ).select("-password");
+
+      if (!user) {
+        return res.status(404).json({
+          success: false,
+          message: "User not found.",
+        });
+      }
+
+      res.json({
+        success: true,
+        message: "User role updated.",
+        user,
+      });
+    } catch (error) {
+      res.status(500).json({
+        success: false,
+        message: error.message,
+      });
     }
-
-    const updatedUser = await User.findByIdAndUpdate(
-      req.params.id,
-      { role },
-      { new: true }
-    ).select("-password");
-
-    if (!updatedUser) {
-      return res.status(404).json({ message: "User not found" });
-    }
-
-    res.json(updatedUser);
-  } catch (err) {
-    res.status(500).json({ message: err.message });
   }
-});
+);
 
-// ৪. ইউজার মুছে ফেলা
-router.delete("/users/:id", async (req, res) => {
-  try {
-    const adminId = req.user.id || req.user._id;
-    if (req.params.id === adminId.toString()) {
-      return res.status(400).json({ message: "You cannot delete your own admin account!" });
+// =====================================================
+// DELETE USER
+// =====================================================
+
+router.delete(
+  "/users/:id",
+  async (req, res) => {
+    try {
+      if (req.params.id === req.user.id) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "You cannot delete your own admin account.",
+        });
+      }
+
+      const user =
+        await User.findByIdAndDelete(
+          req.params.id
+        );
+
+      if (!user) {
+        return res.status(404).json({
+          success: false,
+          message: "User not found.",
+        });
+      }
+
+      res.json({
+        success: true,
+        message: "User deleted successfully.",
+      });
+    } catch (error) {
+      res.status(500).json({
+        success: false,
+        message: error.message,
+      });
     }
-
-    const deletedUser = await User.findByIdAndDelete(req.params.id);
-
-    if (!deletedUser) {
-      return res.status(404).json({ message: "User not found" });
-    }
-
-    res.json({ message: "User deleted successfully", id: req.params.id });
-  } catch (err) {
-    res.status(500).json({ message: err.message });
   }
-});
+);
 
-// ==========================================
-// 📚 BOOK MANAGEMENT & APPROVAL ROUTES
-// ==========================================
+// =====================================================
+// ALL BOOKS
+// =====================================================
 
-// ৫. অ্যাডমিনের জন্য সব বই (পেন্ডিং এবং প্রকাশিত উভয়ই)
 router.get("/books", async (req, res) => {
   try {
-    const books = await Book.find().sort({ createdAt: -1 });
-    res.json(books);
-  } catch (err) {
-    res.status(500).json({ message: err.message });
+    const books =
+      await Book.find()
+        .populate(
+          "owner",
+          "name email photoURL"
+        )
+        .sort({ createdAt: -1 });
+
+    res.json({
+      success: true,
+      books,
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: error.message,
+    });
   }
 });
 
-// ৬. পেন্ডিং বই অনুমোদন করা (Approve & Publish)
-router.patch("/books/:id/approve", async (req, res) => {
-  try {
-    const updatedBook = await Book.findByIdAndUpdate(
-      req.params.id,
-      { status: "Published" },
-      { new: true }
-    );
+// =====================================================
+// PENDING APPROVAL QUEUE
+// =====================================================
 
-    if (!updatedBook) {
-      return res.status(404).json({ message: "Book not found" });
+router.get(
+  "/books/pending",
+  async (req, res) => {
+    try {
+      const books =
+        await Book.find({
+          status: "Pending Approval",
+        })
+          .populate(
+            "owner",
+            "name email photoURL"
+          )
+          .sort({ createdAt: -1 });
+
+      res.json({
+        success: true,
+        books,
+      });
+    } catch (error) {
+      res.status(500).json({
+        success: false,
+        message: error.message,
+      });
     }
-
-    res.json(updatedBook);
-  } catch (err) {
-    res.status(500).json({ message: err.message });
   }
-});
+);
 
-// ৭. বই অপ্রকাশিত করা (Unpublish)
-router.patch("/books/:id/unpublish", async (req, res) => {
-  try {
-    const updatedBook = await Book.findByIdAndUpdate(
-      req.params.id,
-      { status: "Unpublished" },
-      { new: true }
-    );
+// =====================================================
+// APPROVE BOOK
+// =====================================================
 
-    if (!updatedBook) {
-      return res.status(404).json({ message: "Book not found" });
+router.patch(
+  "/books/:id/approve",
+  async (req, res) => {
+    try {
+      const book =
+        await Book.findByIdAndUpdate(
+          req.params.id,
+          {
+            status: "Published",
+          },
+          {
+            new: true,
+          }
+        ).populate(
+          "owner",
+          "name email photoURL"
+        );
+
+      if (!book) {
+        return res.status(404).json({
+          success: false,
+          message: "Book not found.",
+        });
+      }
+
+      res.json({
+        success: true,
+        message:
+          "Book approved and published successfully.",
+        book,
+      });
+    } catch (error) {
+      res.status(500).json({
+        success: false,
+        message: error.message,
+      });
     }
-
-    res.json(updatedBook);
-  } catch (err) {
-    res.status(500).json({ message: err.message });
   }
-});
+);
 
-// ৮. বই ডিলিট করা
-router.delete("/books/:id", async (req, res) => {
-  try {
-    const deletedBook = await Book.findByIdAndDelete(req.params.id);
+// =====================================================
+// UNPUBLISH BOOK
+// =====================================================
 
-    if (!deletedBook) {
-      return res.status(404).json({ message: "Book not found" });
+router.patch(
+  "/books/:id/unpublish",
+  async (req, res) => {
+    try {
+      const book =
+        await Book.findById(
+          req.params.id
+        );
+
+      if (!book) {
+        return res.status(404).json({
+          success: false,
+          message: "Book not found.",
+        });
+      }
+
+      if (book.status === "Checked Out") {
+        return res.status(400).json({
+          success: false,
+          message:
+            "Checked-out book cannot be unpublished.",
+        });
+      }
+
+      book.status = "Unpublished";
+
+      await book.save();
+
+      res.json({
+        success: true,
+        message: "Book unpublished successfully.",
+        book,
+      });
+    } catch (error) {
+      res.status(500).json({
+        success: false,
+        message: error.message,
+      });
     }
-
-    res.json({ message: "Book deleted successfully", id: req.params.id });
-  } catch (err) {
-    res.status(500).json({ message: err.message });
   }
-});
+);
 
-// ৯. ক্যাটাগরি ভিত্তিক বইয়ের চার্ট ডাটা
-router.get("/category-stats", async (req, res) => {
-  try {
-    const categoryStats = await Book.aggregate([
-      { $group: { _id: "$category", value: { $sum: 1 } } },
-      { $project: { _id: 0, name: "$_id", value: 1 } },
-    ]);
-    res.json(categoryStats);
-  } catch (err) {
-    res.status(500).json({ message: err.message });
+// =====================================================
+// DELETE BOOK
+// =====================================================
+
+router.delete(
+  "/books/:id",
+  async (req, res) => {
+    try {
+      const book =
+        await Book.findByIdAndDelete(
+          req.params.id
+        );
+
+      if (!book) {
+        return res.status(404).json({
+          success: false,
+          message: "Book not found.",
+        });
+      }
+
+      res.json({
+        success: true,
+        message: "Book deleted successfully.",
+      });
+    } catch (error) {
+      res.status(500).json({
+        success: false,
+        message: error.message,
+      });
+    }
   }
-});
+);
 
-// ==========================================
-// 💳 TRANSACTION ROUTES
-// ==========================================
+// =====================================================
+// ALL DELIVERIES
+// =====================================================
 
-// ১০. সব ট্রানজাকশনের হিস্ট্রি
-router.get("/transactions", async (req, res) => {
-  try {
-    const transactions = await Transaction.find().sort({ createdAt: -1 });
-    res.json(transactions);
-  } catch (err) {
-    res.status(500).json({ message: err.message });
+router.get(
+  "/deliveries",
+  async (req, res) => {
+    try {
+      const deliveries =
+        await Delivery.find()
+          .populate(
+            "book",
+            "title author"
+          )
+          .populate(
+            "user",
+            "name email"
+          )
+          .populate(
+            "librarian",
+            "name email"
+          )
+          .sort({ createdAt: -1 });
+
+      res.json({
+        success: true,
+        deliveries,
+      });
+    } catch (error) {
+      res.status(500).json({
+        success: false,
+        message: error.message,
+      });
+    }
   }
-});
+);
+
+// =====================================================
+// ALL TRANSACTIONS
+// =====================================================
+
+router.get(
+  "/transactions",
+  async (req, res) => {
+    try {
+      const transactions =
+        await Transaction.find()
+          .populate(
+            "user",
+            "name email"
+          )
+          .populate(
+            "librarian",
+            "name email"
+          )
+          .populate(
+            "book",
+            "title"
+          )
+          .sort({ createdAt: -1 });
+
+      res.json({
+        success: true,
+        transactions,
+      });
+    } catch (error) {
+      res.status(500).json({
+        success: false,
+        message: error.message,
+      });
+    }
+  }
+);
+
+// =====================================================
+// CATEGORY CHART
+// =====================================================
+
+router.get(
+  "/category-stats",
+  async (req, res) => {
+    try {
+      const categoryStats =
+        await Book.aggregate([
+          {
+            $group: {
+              _id: "$category",
+              value: {
+                $sum: 1,
+              },
+            },
+          },
+          {
+            $project: {
+              _id: 0,
+              name: "$_id",
+              value: 1,
+            },
+          },
+          {
+            $sort: {
+              value: -1,
+            },
+          },
+        ]);
+
+      res.json({
+        success: true,
+        categoryStats,
+      });
+    } catch (error) {
+      res.status(500).json({
+        success: false,
+        message: error.message,
+      });
+    }
+  }
+);
 
 module.exports = router;

@@ -1,15 +1,26 @@
 const express = require("express");
-const mongoose = require("mongoose");
 
 const User = require("../models/User");
 const Book = require("../models/Book");
 const Delivery = require("../models/Delivery");
 const Transaction = require("../models/Transaction");
 
-const { verifyToken } = require("../middlewares/authMiddleware");
-const { verifyRole } = require("../middlewares/roleMiddleware");
+const {
+  verifyToken,
+} = require("../middlewares/authMiddleware");
+
+const {
+  verifyRole,
+} = require("../middlewares/roleMiddleware");
 
 const router = express.Router();
+
+// =====================================================
+// ADMIN AUTH
+// Every admin route requires:
+// 1. Valid JWT
+// 2. Admin role
+// =====================================================
 
 router.use(
   verifyToken,
@@ -18,134 +29,213 @@ router.use(
 
 // =====================================================
 // ADMIN STATS
+// GET /api/admin/stats
 // =====================================================
 
-router.get("/stats", async (req, res) => {
-  try {
-    const totalUsers =
-      await User.countDocuments();
+router.get(
+  "/stats",
+  async (req, res) => {
+    try {
+      const totalUsers =
+        await User.countDocuments();
 
-    const totalLibrarians =
-      await User.countDocuments({
-        role: "librarian",
-      });
+      const totalLibrarians =
+        await User.countDocuments({
+          role: "librarian",
+        });
 
-    const totalBooks =
-      await Book.countDocuments();
+      const totalBooks =
+        await Book.countDocuments();
 
-    const totalDeliveries =
-      await Delivery.countDocuments({
-        status: "Delivered",
-      });
+      const totalDeliveries =
+        await Delivery.countDocuments({
+          status: "Delivered",
+        });
 
-    const revenueData =
-      await Transaction.aggregate([
-        {
-          $match: {
-            status: "completed",
-          },
-        },
-        {
-          $group: {
-            _id: null,
-            total: {
-              $sum: "$amount",
+      const revenueData =
+        await Transaction.aggregate([
+          {
+            $match: {
+              status: "completed",
             },
           },
-        },
-      ]);
-
-    const totalRevenue =
-      revenueData[0]?.total || 0;
-
-    const categoryStats =
-      await Book.aggregate([
-        {
-          $group: {
-            _id: "$category",
-            value: {
-              $sum: 1,
+          {
+            $group: {
+              _id: null,
+              total: {
+                $sum: "$amount",
+              },
             },
           },
-        },
-        {
-          $project: {
-            _id: 0,
-            name: "$_id",
-            value: 1,
-          },
-        },
-        {
-          $sort: {
-            value: -1,
-          },
-        },
-      ]);
+        ]);
 
-    res.json({
-      success: true,
-      stats: {
-        totalUsers,
-        totalLibrarians,
-        totalBooks,
-        totalDeliveries,
-        totalRevenue,
-      },
-      categoryStats,
-    });
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: error.message,
-    });
+      const totalRevenue =
+        revenueData[0]?.total || 0;
+
+      res.json({
+        success: true,
+
+        stats: {
+          totalUsers,
+          totalLibrarians,
+          totalBooks,
+          totalDeliveries,
+          totalRevenue,
+        },
+      });
+    } catch (error) {
+      console.error(
+        "Admin stats error:",
+        error
+      );
+
+      res.status(500).json({
+        success: false,
+        message:
+          "Failed to load admin statistics.",
+      });
+    }
   }
-});
+);
+
+// =====================================================
+// CATEGORY STATS
+// GET /api/admin/category-stats
+// =====================================================
+
+router.get(
+  "/category-stats",
+  async (req, res) => {
+    try {
+      const categoryStats =
+        await Book.aggregate([
+          {
+            $match: {
+              category: {
+                $exists: true,
+                $ne: "",
+              },
+            },
+          },
+
+          {
+            $group: {
+              _id: "$category",
+
+              value: {
+                $sum: 1,
+              },
+            },
+          },
+
+          {
+            $project: {
+              _id: 0,
+
+              name: "$_id",
+
+              value: 1,
+            },
+          },
+
+          {
+            $sort: {
+              value: -1,
+            },
+          },
+        ]);
+
+      res.json({
+        success: true,
+        categoryStats,
+      });
+    } catch (error) {
+      console.error(
+        "Category stats error:",
+        error
+      );
+
+      res.status(500).json({
+        success: false,
+        message:
+          "Failed to load category statistics.",
+      });
+    }
+  }
+);
 
 // =====================================================
 // ALL USERS
+// GET /api/admin/users
 // =====================================================
 
-router.get("/users", async (req, res) => {
-  try {
-    const users =
-      await User.find()
-        .select("-password")
-        .sort({ createdAt: -1 });
+router.get(
+  "/users",
+  async (req, res) => {
+    try {
+      const users =
+        await User.find()
+          .select("-password")
+          .sort({
+            createdAt: -1,
+          });
 
-    res.json({
-      success: true,
-      users,
-    });
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: error.message,
-    });
+      res.json({
+        success: true,
+        users,
+      });
+    } catch (error) {
+      console.error(
+        "Get users error:",
+        error
+      );
+
+      res.status(500).json({
+        success: false,
+        message:
+          "Failed to load users.",
+      });
+    }
   }
-});
+);
 
 // =====================================================
 // CHANGE USER ROLE
+// PATCH /api/admin/users/:id/role
 // =====================================================
 
 router.patch(
   "/users/:id/role",
   async (req, res) => {
     try {
-      const { role } = req.body;
+      const {
+        role,
+      } = req.body;
+
+      // Validate role
+
+      const allowedRoles = [
+        "user",
+        "librarian",
+        "admin",
+      ];
 
       if (
-        !["user", "librarian", "admin"].includes(
-          role
-        )
+        !allowedRoles.includes(role)
       ) {
         return res.status(400).json({
           success: false,
-          message: "Invalid role.",
+          message:
+            "Invalid role.",
         });
       }
 
-      if (req.params.id === req.user.id) {
+      // Prevent admin from changing own role
+
+      if (
+        req.params.id ===
+        req.user.id
+      ) {
         return res.status(400).json({
           success: false,
           message:
@@ -156,7 +246,9 @@ router.patch(
       const user =
         await User.findByIdAndUpdate(
           req.params.id,
-          { role },
+          {
+            role,
+          },
           {
             new: true,
             runValidators: true,
@@ -166,19 +258,27 @@ router.patch(
       if (!user) {
         return res.status(404).json({
           success: false,
-          message: "User not found.",
+          message:
+            "User not found.",
         });
       }
 
       res.json({
         success: true,
-        message: "User role updated.",
+        message:
+          "User role updated successfully.",
         user,
       });
     } catch (error) {
+      console.error(
+        "Role update error:",
+        error
+      );
+
       res.status(500).json({
         success: false,
-        message: error.message,
+        message:
+          "Failed to update user role.",
       });
     }
   }
@@ -186,13 +286,19 @@ router.patch(
 
 // =====================================================
 // DELETE USER
+// DELETE /api/admin/users/:id
 // =====================================================
 
 router.delete(
   "/users/:id",
   async (req, res) => {
     try {
-      if (req.params.id === req.user.id) {
+      // Prevent deleting own admin account
+
+      if (
+        req.params.id ===
+        req.user.id
+      ) {
         return res.status(400).json({
           success: false,
           message:
@@ -208,18 +314,26 @@ router.delete(
       if (!user) {
         return res.status(404).json({
           success: false,
-          message: "User not found.",
+          message:
+            "User not found.",
         });
       }
 
       res.json({
         success: true,
-        message: "User deleted successfully.",
+        message:
+          "User deleted successfully.",
       });
     } catch (error) {
+      console.error(
+        "Delete user error:",
+        error
+      );
+
       res.status(500).json({
         success: false,
-        message: error.message,
+        message:
+          "Failed to delete user.",
       });
     }
   }
@@ -227,32 +341,45 @@ router.delete(
 
 // =====================================================
 // ALL BOOKS
+// GET /api/admin/books
 // =====================================================
 
-router.get("/books", async (req, res) => {
-  try {
-    const books =
-      await Book.find()
-        .populate(
-          "owner",
-          "name email photoURL"
-        )
-        .sort({ createdAt: -1 });
+router.get(
+  "/books",
+  async (req, res) => {
+    try {
+      const books =
+        await Book.find()
+          .populate(
+            "owner",
+            "name email photoURL"
+          )
+          .sort({
+            createdAt: -1,
+          });
 
-    res.json({
-      success: true,
-      books,
-    });
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: error.message,
-    });
+      res.json({
+        success: true,
+        books,
+      });
+    } catch (error) {
+      console.error(
+        "Get admin books error:",
+        error
+      );
+
+      res.status(500).json({
+        success: false,
+        message:
+          "Failed to load books.",
+      });
+    }
   }
-});
+);
 
 // =====================================================
-// PENDING APPROVAL QUEUE
+// PENDING APPROVAL BOOKS
+// GET /api/admin/books/pending
 // =====================================================
 
 router.get(
@@ -267,16 +394,24 @@ router.get(
             "owner",
             "name email photoURL"
           )
-          .sort({ createdAt: -1 });
+          .sort({
+            createdAt: -1,
+          });
 
       res.json({
         success: true,
         books,
       });
     } catch (error) {
+      console.error(
+        "Get pending books error:",
+        error
+      );
+
       res.status(500).json({
         success: false,
-        message: error.message,
+        message:
+          "Failed to load pending books.",
       });
     }
   }
@@ -284,6 +419,7 @@ router.get(
 
 // =====================================================
 // APPROVE BOOK
+// PATCH /api/admin/books/:id/approve
 // =====================================================
 
 router.patch(
@@ -298,6 +434,7 @@ router.patch(
           },
           {
             new: true,
+            runValidators: true,
           }
         ).populate(
           "owner",
@@ -307,7 +444,8 @@ router.patch(
       if (!book) {
         return res.status(404).json({
           success: false,
-          message: "Book not found.",
+          message:
+            "Book not found.",
         });
       }
 
@@ -318,9 +456,15 @@ router.patch(
         book,
       });
     } catch (error) {
+      console.error(
+        "Approve book error:",
+        error
+      );
+
       res.status(500).json({
         success: false,
-        message: error.message,
+        message:
+          "Failed to approve book.",
       });
     }
   }
@@ -328,6 +472,7 @@ router.patch(
 
 // =====================================================
 // UNPUBLISH BOOK
+// PATCH /api/admin/books/:id/unpublish
 // =====================================================
 
 router.patch(
@@ -342,11 +487,17 @@ router.patch(
       if (!book) {
         return res.status(404).json({
           success: false,
-          message: "Book not found.",
+          message:
+            "Book not found.",
         });
       }
 
-      if (book.status === "Checked Out") {
+      // A checked-out book cannot be unpublished.
+
+      if (
+        book.status ===
+        "Checked Out"
+      ) {
         return res.status(400).json({
           success: false,
           message:
@@ -354,19 +505,35 @@ router.patch(
         });
       }
 
-      book.status = "Unpublished";
+      book.status =
+        "Unpublished";
 
       await book.save();
 
+      const updatedBook =
+        await Book.findById(
+          book._id
+        ).populate(
+          "owner",
+          "name email photoURL"
+        );
+
       res.json({
         success: true,
-        message: "Book unpublished successfully.",
-        book,
+        message:
+          "Book unpublished successfully.",
+        book: updatedBook,
       });
     } catch (error) {
+      console.error(
+        "Unpublish book error:",
+        error
+      );
+
       res.status(500).json({
         success: false,
-        message: error.message,
+        message:
+          "Failed to unpublish book.",
       });
     }
   }
@@ -374,6 +541,7 @@ router.patch(
 
 // =====================================================
 // DELETE BOOK
+// DELETE /api/admin/books/:id
 // =====================================================
 
 router.delete(
@@ -388,18 +556,26 @@ router.delete(
       if (!book) {
         return res.status(404).json({
           success: false,
-          message: "Book not found.",
+          message:
+            "Book not found.",
         });
       }
 
       res.json({
         success: true,
-        message: "Book deleted successfully.",
+        message:
+          "Book deleted successfully.",
       });
     } catch (error) {
+      console.error(
+        "Delete book error:",
+        error
+      );
+
       res.status(500).json({
         success: false,
-        message: error.message,
+        message:
+          "Failed to delete book.",
       });
     }
   }
@@ -407,6 +583,7 @@ router.delete(
 
 // =====================================================
 // ALL DELIVERIES
+// GET /api/admin/deliveries
 // =====================================================
 
 router.get(
@@ -417,26 +594,34 @@ router.get(
         await Delivery.find()
           .populate(
             "book",
-            "title author"
+            "title author coverImage category deliveryFee"
           )
           .populate(
             "user",
-            "name email"
+            "name email photoURL"
           )
           .populate(
             "librarian",
-            "name email"
+            "name email photoURL"
           )
-          .sort({ createdAt: -1 });
+          .sort({
+            createdAt: -1,
+          });
 
       res.json({
         success: true,
         deliveries,
       });
     } catch (error) {
+      console.error(
+        "Get deliveries error:",
+        error
+      );
+
       res.status(500).json({
         success: false,
-        message: error.message,
+        message:
+          "Failed to load deliveries.",
       });
     }
   }
@@ -444,6 +629,7 @@ router.get(
 
 // =====================================================
 // ALL TRANSACTIONS
+// GET /api/admin/transactions
 // =====================================================
 
 router.get(
@@ -454,71 +640,34 @@ router.get(
         await Transaction.find()
           .populate(
             "user",
-            "name email"
+            "name email photoURL"
           )
           .populate(
             "librarian",
-            "name email"
+            "name email photoURL"
           )
           .populate(
             "book",
-            "title"
+            "title author coverImage"
           )
-          .sort({ createdAt: -1 });
+          .sort({
+            createdAt: -1,
+          });
 
       res.json({
         success: true,
         transactions,
       });
     } catch (error) {
+      console.error(
+        "Get transactions error:",
+        error
+      );
+
       res.status(500).json({
         success: false,
-        message: error.message,
-      });
-    }
-  }
-);
-
-// =====================================================
-// CATEGORY CHART
-// =====================================================
-
-router.get(
-  "/category-stats",
-  async (req, res) => {
-    try {
-      const categoryStats =
-        await Book.aggregate([
-          {
-            $group: {
-              _id: "$category",
-              value: {
-                $sum: 1,
-              },
-            },
-          },
-          {
-            $project: {
-              _id: 0,
-              name: "$_id",
-              value: 1,
-            },
-          },
-          {
-            $sort: {
-              value: -1,
-            },
-          },
-        ]);
-
-      res.json({
-        success: true,
-        categoryStats,
-      });
-    } catch (error) {
-      res.status(500).json({
-        success: false,
-        message: error.message,
+        message:
+          "Failed to load transactions.",
       });
     }
   }

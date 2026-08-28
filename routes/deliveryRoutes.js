@@ -10,10 +10,15 @@ const { verifyRole } = require("../middlewares/roleMiddleware");
 
 const router = express.Router();
 
+if (!process.env.STRIPE_SECRET_KEY) {
+  console.warn("⚠️ STRIPE_SECRET_KEY is missing from .env");
+}
+
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 
 // =====================================================
 // CREATE PAYMENT INTENT
+// POST /api/deliveries/create-payment-intent
 // =====================================================
 
 router.post(
@@ -22,6 +27,13 @@ router.post(
   async (req, res) => {
     try {
       const { bookId } = req.body;
+
+      if (!bookId) {
+        return res.status(400).json({
+          success: false,
+          message: "Book ID is required.",
+        });
+      }
 
       const book = await Book.findById(bookId);
 
@@ -32,6 +44,7 @@ router.post(
         });
       }
 
+      // Only published books can be requested
       if (book.status !== "Published") {
         return res.status(400).json({
           success: false,
@@ -39,19 +52,42 @@ router.post(
         });
       }
 
-      if (book.owner.toString() === req.user.id) {
+      // Owner cannot request own book
+      if (
+        book.owner &&
+        book.owner.toString() === req.user.id
+      ) {
         return res.status(403).json({
           success: false,
-          message: "You cannot request delivery of your own book.",
+          message:
+            "You cannot request delivery of your own book.",
         });
       }
 
       const amount = Number(book.deliveryFee);
 
-      if (!amount || amount <= 0) {
+      if (!Number.isFinite(amount) || amount <= 0) {
         return res.status(400).json({
           success: false,
           message: "Invalid delivery fee.",
+        });
+      }
+
+      // Prevent multiple active requests for same book/user
+      const existingDelivery =
+        await Delivery.findOne({
+          book: book._id,
+          user: req.user.id,
+          status: {
+            $in: ["Pending", "Dispatched"],
+          },
+        });
+
+      if (existingDelivery) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "You already have an active delivery request for this book.",
         });
       }
 
@@ -59,6 +95,7 @@ router.post(
         await stripe.paymentIntents.create({
           amount: Math.round(amount * 100),
           currency: "usd",
+
           automatic_payment_methods: {
             enabled: true,
           },
@@ -70,25 +107,41 @@ router.post(
           },
         });
 
-      res.json({
+      return res.status(200).json({
         success: true,
-        clientSecret: paymentIntent.client_secret,
+        clientSecret:
+          paymentIntent.client_secret,
         paymentIntentId: paymentIntent.id,
         amount,
       });
     } catch (error) {
-      console.error("Stripe error:", error);
+      console.error(
+        "CREATE PAYMENT INTENT ERROR:",
+        error
+      );
 
-      res.status(500).json({
+      return res.status(500).json({
         success: false,
-        message: error.message,
+        message:
+          error?.message ||
+          "Failed to create payment intent.",
       });
     }
   }
 );
 
 // =====================================================
-// CONFIRM PAYMENT + CREATE TRANSACTION + DELIVERY
+// CONFIRM PAYMENT
+// POST /api/deliveries/confirm-payment
+//
+// Stripe payment successful হলে:
+// 1. Transaction create
+// 2. Delivery create
+// 3. Book -> Checked Out
+//
+// IMPORTANT:
+// Frontend অবশ্যই Stripe payment success হওয়ার পরে
+// এই endpoint call করবে.
 // =====================================================
 
 router.post(
@@ -101,23 +154,76 @@ router.post(
       if (!paymentIntentId) {
         return res.status(400).json({
           success: false,
-          message: "Payment Intent ID is required.",
+          message:
+            "Payment Intent ID is required.",
         });
       }
+
+      // -----------------------------------------------
+      // Get payment from Stripe
+      // -----------------------------------------------
 
       const paymentIntent =
         await stripe.paymentIntents.retrieve(
           paymentIntentId
         );
 
-      if (paymentIntent.status !== "succeeded") {
-        return res.status(400).json({
+      if (!paymentIntent) {
+        return res.status(404).json({
           success: false,
-          message: "Payment has not been completed.",
+          message:
+            "Payment intent not found.",
         });
       }
 
-      // Prevent duplicate transaction
+      // -----------------------------------------------
+      // Payment must be successful
+      // -----------------------------------------------
+
+      if (
+        paymentIntent.status !==
+        "succeeded"
+      ) {
+        return res.status(400).json({
+          success: false,
+          message:
+            `Payment is not completed. Current status: ${paymentIntent.status}`,
+        });
+      }
+
+      // -----------------------------------------------
+      // Verify payment belongs to logged user
+      // -----------------------------------------------
+
+      const metadata =
+        paymentIntent.metadata || {};
+
+      const {
+        bookId,
+        userId,
+        librarianId,
+      } = metadata;
+
+      if (!bookId || !userId || !librarianId) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "Payment metadata is incomplete.",
+        });
+      }
+
+      if (userId !== req.user.id) {
+        return res.status(403).json({
+          success: false,
+          message:
+            "This payment does not belong to the logged-in user.",
+        });
+      }
+
+      // -----------------------------------------------
+      // Check existing transaction
+      // -----------------------------------------------
+
       const existingTransaction =
         await Transaction.findOne({
           paymentIntentId,
@@ -128,31 +234,38 @@ router.post(
           await Delivery.findOne({
             transactionId:
               existingTransaction.transactionId,
-          }).populate("book");
+          })
+            .populate(
+              "book",
+              "title author coverImage category deliveryFee status"
+            )
+            .populate(
+              "user",
+              "name email photoURL"
+            )
+            .populate(
+              "librarian",
+              "name email photoURL"
+            );
 
-        return res.json({
+        return res.status(200).json({
           success: true,
-          message: "Payment already processed.",
-          transaction: existingTransaction,
-          delivery: existingDelivery,
+          alreadyProcessed: true,
+          message:
+            "Payment was already processed.",
+          transaction:
+            existingTransaction,
+          delivery:
+            existingDelivery,
         });
       }
 
-      const {
-        bookId,
-        userId,
-        librarianId,
-      } = paymentIntent.metadata;
+      // -----------------------------------------------
+      // Find book
+      // -----------------------------------------------
 
-      // Ensure payment belongs to logged-in user
-      if (userId !== req.user.id) {
-        return res.status(403).json({
-          success: false,
-          message: "Payment does not belong to this user.",
-        });
-      }
-
-      const book = await Book.findById(bookId);
+      const book =
+        await Book.findById(bookId);
 
       if (!book) {
         return res.status(404).json({
@@ -161,59 +274,239 @@ router.post(
         });
       }
 
-      if (book.status !== "Published") {
+      // -----------------------------------------------
+      // Verify book owner
+      // -----------------------------------------------
+
+      if (
+        !book.owner ||
+        book.owner.toString() !==
+          librarianId
+      ) {
         return res.status(400).json({
           success: false,
-          message: "Book is no longer available.",
+          message:
+            "Book owner information is invalid.",
         });
       }
 
-      const amount =
-        paymentIntent.amount_received / 100;
+      // -----------------------------------------------
+      // Book must still be available
+      // -----------------------------------------------
 
-      const transaction = await Transaction.create({
-        user: req.user.id,
-        librarian: librarianId,
-        book: bookId,
-        amount,
-        transactionId: paymentIntent.id,
-        paymentIntentId: paymentIntent.id,
-        status: "completed",
-      });
+      if (book.status !== "Published") {
+        return res.status(400).json({
+          success: false,
+          message:
+            "This book is no longer available.",
+        });
+      }
 
-      const delivery = await Delivery.create({
-        book: bookId,
-        user: req.user.id,
-        librarian: librarianId,
-        transactionId: paymentIntent.id,
-        deliveryFee: amount,
-        status: "Pending",
-      });
+      // -----------------------------------------------
+      // Verify Stripe amount
+      // -----------------------------------------------
 
-      // Lock the book
+      const paidAmount =
+        Number(
+          paymentIntent.amount_received
+        ) / 100;
+
+      const bookFee =
+        Number(book.deliveryFee);
+
+      if (
+        !Number.isFinite(paidAmount) ||
+        paidAmount <= 0
+      ) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "Invalid payment amount.",
+        });
+      }
+
+      if (
+        Math.round(paidAmount * 100) !==
+        Math.round(bookFee * 100)
+      ) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "Payment amount does not match the delivery fee.",
+        });
+      }
+
+      // -----------------------------------------------
+      // Create transaction
+      // -----------------------------------------------
+
+      const transaction =
+        await Transaction.create({
+          user: req.user.id,
+          librarian: librarianId,
+          book: bookId,
+
+          amount: paidAmount,
+
+          // Payment Intent ID is used as transaction ID
+          transactionId:
+            paymentIntent.id,
+
+          paymentIntentId:
+            paymentIntent.id,
+
+          status: "completed",
+        });
+
+      // -----------------------------------------------
+      // Create delivery
+      // -----------------------------------------------
+
+      const delivery =
+        await Delivery.create({
+          book: bookId,
+          user: req.user.id,
+          librarian: librarianId,
+
+          transactionId:
+            paymentIntent.id,
+
+          deliveryFee: paidAmount,
+
+          status: "Pending",
+        });
+
+      // -----------------------------------------------
+      // Lock book
+      // -----------------------------------------------
+
       book.status = "Checked Out";
+
       await book.save();
 
+      // -----------------------------------------------
+      // Populate delivery
+      // -----------------------------------------------
+
       const populatedDelivery =
-        await Delivery.findById(delivery._id)
-          .populate("book", "title author coverImage")
-          .populate("user", "name email photoURL")
+        await Delivery.findById(
+          delivery._id
+        )
+          .populate(
+            "book",
+            "title author coverImage category deliveryFee status"
+          )
+          .populate(
+            "user",
+            "name email photoURL"
+          )
           .populate(
             "librarian",
             "name email photoURL"
           );
 
-      res.status(201).json({
+      return res.status(201).json({
         success: true,
+
         message:
-          "Payment successful and delivery request created.",
+          "Payment successful. Delivery request created.",
+
         transaction,
-        delivery: populatedDelivery,
+
+        delivery:
+          populatedDelivery,
       });
     } catch (error) {
-      console.error(error);
+      console.error(
+        "CONFIRM PAYMENT ERROR:",
+        error
+      );
 
-      res.status(500).json({
+      // Mongo duplicate key
+      if (error?.code === 11000) {
+        const transaction =
+          await Transaction.findOne({
+            paymentIntentId:
+              req.body?.paymentIntentId,
+          });
+
+        if (transaction) {
+          const delivery =
+            await Delivery.findOne({
+              transactionId:
+                transaction.transactionId,
+            })
+              .populate(
+                "book",
+                "title author coverImage category deliveryFee status"
+              )
+              .populate(
+                "user",
+                "name email photoURL"
+              )
+              .populate(
+                "librarian",
+                "name email photoURL"
+              );
+
+          return res.status(200).json({
+            success: true,
+            alreadyProcessed: true,
+            message:
+              "Payment was already processed.",
+            transaction,
+            delivery,
+          });
+        }
+      }
+
+      return res.status(500).json({
+        success: false,
+        message:
+          error?.message ||
+          "Failed to confirm payment.",
+      });
+    }
+  }
+);
+
+// =====================================================
+// USER DELIVERY HISTORY
+// GET /api/deliveries/my-orders
+// =====================================================
+
+router.get(
+  "/my-orders",
+  verifyToken,
+  async (req, res) => {
+    try {
+      const deliveries =
+        await Delivery.find({
+          user: req.user.id,
+        })
+          .populate(
+            "book",
+            "title author coverImage category deliveryFee status"
+          )
+          .populate(
+            "librarian",
+            "name email photoURL"
+          )
+          .sort({
+            createdAt: -1,
+          });
+
+      return res.status(200).json({
+        success: true,
+        deliveries,
+      });
+    } catch (error) {
+      console.error(
+        "MY ORDERS ERROR:",
+        error
+      );
+
+      return res.status(500).json({
         success: false,
         message: error.message,
       });
@@ -223,61 +516,44 @@ router.post(
 
 // =====================================================
 // USER DELIVERY HISTORY
+// GET /api/deliveries/my-loans
+//
+// Backward compatible endpoint
 // =====================================================
 
-router.get(
-  "/my-orders",
-  verifyToken,
-  async (req, res) => {
-    try {
-      const deliveries = await Delivery.find({
-        user: req.user.id,
-      })
-        .populate(
-          "book",
-          "title author coverImage category deliveryFee status"
-        )
-        .populate(
-          "librarian",
-          "name email photoURL"
-        )
-        .sort({ createdAt: -1 });
-
-      res.json({
-        success: true,
-        deliveries,
-      });
-    } catch (error) {
-      res.status(500).json({
-        success: false,
-        message: error.message,
-      });
-    }
-  }
-);
-
-// Backward compatible endpoint
 router.get(
   "/my-loans",
   verifyToken,
   async (req, res) => {
     try {
-      const deliveries = await Delivery.find({
-        user: req.user.id,
-      })
-        .populate(
-          "book",
-          "title author coverImage category deliveryFee status"
-        )
-        .sort({ createdAt: -1 });
+      const deliveries =
+        await Delivery.find({
+          user: req.user.id,
+        })
+          .populate(
+            "book",
+            "title author coverImage category deliveryFee status"
+          )
+          .populate(
+            "librarian",
+            "name email photoURL"
+          )
+          .sort({
+            createdAt: -1,
+          });
 
-      res.json({
+      return res.status(200).json({
         success: true,
         loans: deliveries,
         deliveries,
       });
     } catch (error) {
-      res.status(500).json({
+      console.error(
+        "MY LOANS ERROR:",
+        error
+      );
+
+      return res.status(500).json({
         success: false,
         message: error.message,
       });
@@ -287,6 +563,7 @@ router.get(
 
 // =====================================================
 // CHECK WHETHER USER CAN REVIEW
+// GET /api/deliveries/check-delivery/:bookId
 // =====================================================
 
 router.get(
@@ -294,18 +571,24 @@ router.get(
   verifyToken,
   async (req, res) => {
     try {
-      const delivery = await Delivery.findOne({
-        book: req.params.bookId,
-        user: req.user.id,
-        status: "Delivered",
-      });
+      const delivery =
+        await Delivery.findOne({
+          book: req.params.bookId,
+          user: req.user.id,
+          status: "Delivered",
+        });
 
-      res.json({
+      return res.status(200).json({
         success: true,
-        canReview: !!delivery,
+        canReview: Boolean(delivery),
       });
     } catch (error) {
-      res.status(500).json({
+      console.error(
+        "CHECK DELIVERY ERROR:",
+        error
+      );
+
+      return res.status(500).json({
         success: false,
         message: error.message,
       });
@@ -315,6 +598,7 @@ router.get(
 
 // =====================================================
 // LIBRARIAN DELIVERY LIST
+// GET /api/deliveries/librarian
 // =====================================================
 
 router.get(
@@ -323,25 +607,33 @@ router.get(
   verifyRole("librarian"),
   async (req, res) => {
     try {
-      const deliveries = await Delivery.find({
-        librarian: req.user.id,
-      })
-        .populate(
-          "book",
-          "title author coverImage category"
-        )
-        .populate(
-          "user",
-          "name email photoURL"
-        )
-        .sort({ createdAt: -1 });
+      const deliveries =
+        await Delivery.find({
+          librarian: req.user.id,
+        })
+          .populate(
+            "book",
+            "title author coverImage category"
+          )
+          .populate(
+            "user",
+            "name email photoURL"
+          )
+          .sort({
+            createdAt: -1,
+          });
 
-      res.json({
+      return res.status(200).json({
         success: true,
         deliveries,
       });
     } catch (error) {
-      res.status(500).json({
+      console.error(
+        "LIBRARIAN DELIVERY ERROR:",
+        error
+      );
+
+      return res.status(500).json({
         success: false,
         message: error.message,
       });
@@ -351,7 +643,7 @@ router.get(
 
 // =====================================================
 // UPDATE DELIVERY STATUS
-// LIBRARIAN
+// PATCH /api/deliveries/:id/status
 // =====================================================
 
 router.patch(
@@ -368,10 +660,13 @@ router.patch(
         "Delivered",
       ];
 
-      if (!allowedStatuses.includes(status)) {
+      if (
+        !allowedStatuses.includes(status)
+      ) {
         return res.status(400).json({
           success: false,
-          message: "Invalid delivery status.",
+          message:
+            "Invalid delivery status.",
         });
       }
 
@@ -383,13 +678,16 @@ router.patch(
       if (!delivery) {
         return res.status(404).json({
           success: false,
-          message: "Delivery not found.",
+          message:
+            "Delivery not found.",
         });
       }
 
+      // Librarian can only manage own deliveries
       if (
         req.user.role === "librarian" &&
-        delivery.librarian.toString() !== req.user.id
+        delivery.librarian.toString() !==
+          req.user.id
       ) {
         return res.status(403).json({
           success: false,
@@ -398,13 +696,13 @@ router.patch(
         });
       }
 
-      // Prevent going backwards
       const statusOrder = {
         Pending: 1,
         Dispatched: 2,
         Delivered: 3,
       };
 
+      // Prevent going backwards
       if (
         statusOrder[status] <
         statusOrder[delivery.status]
@@ -420,7 +718,10 @@ router.patch(
 
       await delivery.save();
 
-      // Delivered means the book becomes available again.
+      // -----------------------------------------------
+      // Delivered -> book available again
+      // -----------------------------------------------
+
       if (status === "Delivered") {
         await Book.findByIdAndUpdate(
           delivery.book,
@@ -436,7 +737,7 @@ router.patch(
         )
           .populate(
             "book",
-            "title author coverImage"
+            "title author coverImage category deliveryFee status"
           )
           .populate(
             "user",
@@ -447,14 +748,20 @@ router.patch(
             "name email photoURL"
           );
 
-      res.json({
+      return res.status(200).json({
         success: true,
         message:
           "Delivery status updated successfully.",
-        delivery: updatedDelivery,
+        delivery:
+          updatedDelivery,
       });
     } catch (error) {
-      res.status(500).json({
+      console.error(
+        "UPDATE DELIVERY STATUS ERROR:",
+        error
+      );
+
+      return res.status(500).json({
         success: false,
         message: error.message,
       });

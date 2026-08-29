@@ -10,17 +10,18 @@ const app = express();
 const PORT = process.env.PORT || 5000;
 
 // ==============================
-// DATABASE
+// DATABASE (Connect per invocation/start)
 // ==============================
-
 connectDB();
 
 // ==============================
-// CORS
+// CORS CONFIGURATION
 // ==============================
+const clientUrl = process.env.CLIENT_URL ? process.env.CLIENT_URL.replace(/\/$/, "") : "";
 
 const allowedOrigins = [
-  process.env.CLIENT_URL,
+  clientUrl,
+  "https://biblio-drop-client-ten.vercel.app",
   "http://localhost:3000",
   "http://127.0.0.1:3000",
 ].filter(Boolean);
@@ -28,74 +29,42 @@ const allowedOrigins = [
 app.use(
   cors({
     origin: (origin, callback) => {
-      // Postman / server-to-server requests
+      // Postman / Server-to-server / same-origin requests
       if (!origin) {
         return callback(null, true);
       }
 
-      if (allowedOrigins.includes(origin)) {
+      // Check if origin is allowed or ends with .vercel.app
+      const cleanOrigin = origin.replace(/\/$/, "");
+      if (allowedOrigins.includes(cleanOrigin) || cleanOrigin.endsWith(".vercel.app")) {
         return callback(null, true);
       }
 
-      return callback(
-        new Error("Not allowed by CORS")
-      );
+      return callback(new Error("Not allowed by CORS"));
     },
-
     credentials: true,
   })
 );
 
 // ==============================
-// BODY PARSER
+// BODY PARSER & COOKIE
 // ==============================
-
 app.use(express.json());
-
-// ==============================
-// COOKIE
-// ==============================
-
 app.use(cookieParser());
 
 // ==============================
 // ROUTES
 // ==============================
-
-app.use(
-  "/api/auth",
-  require("./routes/authRoutes")
-);
-
-app.use(
-  "/api/books",
-  require("./routes/bookRoutes")
-);
-
-app.use(
-  "/api/deliveries",
-  require("./routes/deliveryRoutes")
-);
-
-app.use(
-  "/api/reviews",
-  require("./routes/reviewRoutes")
-);
-
-app.use(
-  "/api/librarian",
-  require("./routes/librarianRoutes")
-);
-
-app.use(
-  "/api/admin",
-  require("./routes/adminRoutes")
-);
+app.use("/api/auth", require("./routes/authRoutes"));
+app.use("/api/books", require("./routes/bookRoutes"));
+app.use("/api/deliveries", require("./routes/deliveryRoutes"));
+app.use("/api/reviews", require("./routes/reviewRoutes"));
+app.use("/api/librarian", require("./routes/librarianRoutes"));
+app.use("/api/admin", require("./routes/adminRoutes"));
 
 // ==============================
 // HEALTH CHECK
 // ==============================
-
 app.get("/", (req, res) => {
   res.json({
     success: true,
@@ -112,9 +81,8 @@ app.get("/api/health", (req, res) => {
 });
 
 // ==============================
-// 404
+// 404 HANDLER
 // ==============================
-
 app.use((req, res) => {
   res.status(404).json({
     success: false,
@@ -125,7 +93,6 @@ app.use((req, res) => {
 // ==============================
 // GLOBAL ERROR HANDLER
 // ==============================
-
 app.use((err, req, res, next) => {
   console.error("Global Error:", err);
 
@@ -146,11 +113,12 @@ app.use((err, req, res, next) => {
 });
 
 // ==============================
-// START SERVER
+// EXPORT / LISTEN
 // ==============================
+if (process.env.NODE_ENV !== "production") {
+  app.listen(PORT, () => {
+    console.log(`BiblioDrop server running on port ${PORT}`);
+  });
+}
 
-app.listen(PORT, () => {
-  console.log(
-    `BiblioDrop server running on port ${PORT}`
-  );
-});
+module.exports = app;

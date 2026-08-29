@@ -8,7 +8,47 @@ const { verifyToken } = require("../middlewares/authMiddleware");
 const router = express.Router();
 
 // =====================================================
+// GET REVIEWS FOR A BOOK
+// GET /api/reviews?bookId=BOOK_ID
+//
+// Public access
+// Login required নয়
+// =====================================================
+
+router.get("/", async (req, res) => {
+  try {
+    const { bookId } = req.query;
+
+    if (!bookId) {
+      return res.status(400).json({
+        success: false,
+        message: "Book ID is required.",
+      });
+    }
+
+    const reviews = await Review.find({
+      book: bookId,
+    })
+      .populate("user", "name photoURL")
+      .sort({ createdAt: -1 });
+
+    return res.status(200).json({
+      success: true,
+      reviews,
+    });
+  } catch (error) {
+    console.error("GET BOOK REVIEWS ERROR:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: error.message,
+    });
+  }
+});
+
+// =====================================================
 // CREATE VERIFIED REVIEW
+// POST /api/reviews
 // =====================================================
 
 router.post("/", verifyToken, async (req, res) => {
@@ -40,7 +80,10 @@ router.post("/", verifyToken, async (req, res) => {
       });
     }
 
+    // -----------------------------------------------
     // Verified delivery check
+    // -----------------------------------------------
+
     const delivered =
       await Delivery.findOne({
         book: bookId,
@@ -56,7 +99,10 @@ router.post("/", verifyToken, async (req, res) => {
       });
     }
 
+    // -----------------------------------------------
     // One review per user per book
+    // -----------------------------------------------
+
     const existingReview =
       await Review.findOne({
         book: bookId,
@@ -71,6 +117,10 @@ router.post("/", verifyToken, async (req, res) => {
       });
     }
 
+    // -----------------------------------------------
+    // Create review
+    // -----------------------------------------------
+
     const review = await Review.create({
       book: bookId,
       user: req.user.id,
@@ -78,18 +128,30 @@ router.post("/", verifyToken, async (req, res) => {
       comment: comment.trim(),
     });
 
+    // -----------------------------------------------
+    // Populate user information
+    // -----------------------------------------------
+
     const populatedReview =
-      await Review.findById(review._id).populate(
+      await Review.findById(
+        review._id
+      ).populate(
         "user",
         "name photoURL"
       );
 
-    res.status(201).json({
+    return res.status(201).json({
       success: true,
-      message: "Review submitted successfully.",
+      message:
+        "Review submitted successfully.",
       review: populatedReview,
     });
   } catch (error) {
+    console.error(
+      "CREATE REVIEW ERROR:",
+      error
+    );
+
     // Mongo duplicate key
     if (error.code === 11000) {
       return res.status(409).json({
@@ -99,7 +161,7 @@ router.post("/", verifyToken, async (req, res) => {
       });
     }
 
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
       message: error.message,
     });
@@ -108,6 +170,7 @@ router.post("/", verifyToken, async (req, res) => {
 
 // =====================================================
 // MY REVIEWS
+// GET /api/reviews/my-reviews
 // =====================================================
 
 router.get(
@@ -122,14 +185,21 @@ router.get(
           "book",
           "title author coverImage category"
         )
-        .sort({ createdAt: -1 });
+        .sort({
+          createdAt: -1,
+        });
 
-      res.json({
+      return res.status(200).json({
         success: true,
         reviews,
       });
     } catch (error) {
-      res.status(500).json({
+      console.error(
+        "MY REVIEWS ERROR:",
+        error
+      );
+
+      return res.status(500).json({
         success: false,
         message: error.message,
       });
@@ -139,6 +209,7 @@ router.get(
 
 // =====================================================
 // UPDATE MY REVIEW
+// PATCH /api/reviews/:id
 // =====================================================
 
 router.patch(
@@ -150,6 +221,10 @@ router.patch(
         rating,
         comment,
       } = req.body;
+
+      // -----------------------------------------------
+      // Find only the logged-in user's review
+      // -----------------------------------------------
 
       const review =
         await Review.findOne({
@@ -164,6 +239,10 @@ router.patch(
             "Review not found or unauthorized.",
         });
       }
+
+      // -----------------------------------------------
+      // Update rating
+      // -----------------------------------------------
 
       if (rating !== undefined) {
         const numericRating = Number(rating);
@@ -182,19 +261,50 @@ router.patch(
         review.rating = numericRating;
       }
 
+      // -----------------------------------------------
+      // Update comment
+      // -----------------------------------------------
+
       if (comment !== undefined) {
-        review.comment = comment.trim();
+        const trimmedComment =
+          comment.trim();
+
+        if (!trimmedComment) {
+          return res.status(400).json({
+            success: false,
+            message:
+              "Comment cannot be empty.",
+          });
+        }
+
+        review.comment =
+          trimmedComment;
       }
 
       await review.save();
 
-      res.json({
+      // Populate updated review
+      const updatedReview =
+        await Review.findById(
+          review._id
+        ).populate(
+          "user",
+          "name photoURL"
+        );
+
+      return res.status(200).json({
         success: true,
-        message: "Review updated successfully.",
-        review,
+        message:
+          "Review updated successfully.",
+        review: updatedReview,
       });
     } catch (error) {
-      res.status(500).json({
+      console.error(
+        "UPDATE REVIEW ERROR:",
+        error
+      );
+
+      return res.status(500).json({
         success: false,
         message: error.message,
       });
@@ -204,6 +314,7 @@ router.patch(
 
 // =====================================================
 // DELETE MY REVIEW
+// DELETE /api/reviews/:id
 // =====================================================
 
 router.delete(
@@ -225,12 +336,18 @@ router.delete(
         });
       }
 
-      res.json({
+      return res.status(200).json({
         success: true,
-        message: "Review deleted successfully.",
+        message:
+          "Review deleted successfully.",
       });
     } catch (error) {
-      res.status(500).json({
+      console.error(
+        "DELETE REVIEW ERROR:",
+        error
+      );
+
+      return res.status(500).json({
         success: false,
         message: error.message,
       });

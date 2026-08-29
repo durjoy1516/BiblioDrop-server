@@ -10,9 +10,12 @@ const app = express();
 const PORT = process.env.PORT || 5000;
 
 // ==============================
-// DATABASE (Connect per invocation/start)
+// DATABASE (Connect per request for Vercel Serverless)
 // ==============================
-connectDB();
+app.use(async (req, res, next) => {
+  await connectDB();
+  next();
+});
 
 // ==============================
 // CORS CONFIGURATION

@@ -3,24 +3,40 @@ const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 
 const User = require("../models/User");
-const { verifyToken } = require("../middlewares/authMiddleware");
-const { verifyRole } = require("../middlewares/roleMiddleware");
+
+const {
+  verifyToken,
+} = require("../middlewares/authMiddleware");
+
+const {
+  verifyRole,
+} = require("../middlewares/roleMiddleware");
 
 const router = express.Router();
 
-const isProduction = process.env.NODE_ENV === "production";
+// =====================================================
+// COOKIE CONFIGURATION
+// =====================================================
+
+const isProduction =
+  process.env.NODE_ENV === "production";
 
 const cookieOptions = {
   httpOnly: true,
   secure: isProduction,
   sameSite: isProduction ? "none" : "lax",
   maxAge: 7 * 24 * 60 * 60 * 1000,
+  path: "/",
 };
+
+// =====================================================
+// CREATE JWT
+// =====================================================
 
 const createToken = (user) => {
   return jwt.sign(
     {
-      id: user._id,
+      id: user._id.toString(),
       email: user.email,
       role: user.role,
     },
@@ -31,6 +47,10 @@ const createToken = (user) => {
   );
 };
 
+// =====================================================
+// PUBLIC USER DATA
+// =====================================================
+
 const publicUser = (user) => ({
   id: user._id,
   name: user.name,
@@ -39,9 +59,9 @@ const publicUser = (user) => ({
   photoURL: user.photoURL,
 });
 
-// ==============================
+// =====================================================
 // REGISTER
-// ==============================
+// =====================================================
 
 router.post("/register", async (req, res) => {
   try {
@@ -54,14 +74,22 @@ router.post("/register", async (req, res) => {
       photoURL,
     } = req.body;
 
+    // =================================================
+    // VALIDATION
+    // =================================================
+
     if (!name || !email || !password) {
       return res.status(400).json({
         success: false,
-        message: "Name, email and password are required.",
+        message:
+          "Name, email and password are required.",
       });
     }
 
-    if (confirmPassword !== undefined && password !== confirmPassword) {
+    if (
+      confirmPassword !== undefined &&
+      password !== confirmPassword
+    ) {
       return res.status(400).json({
         success: false,
         message: "Passwords do not match.",
@@ -71,22 +99,40 @@ router.post("/register", async (req, res) => {
     if (password.length < 6) {
       return res.status(400).json({
         success: false,
-        message: "Password must be at least 6 characters.",
+        message:
+          "Password must be at least 6 characters.",
       });
     }
 
-    // Public registration can only create these roles
-    const allowedRoles = ["user", "librarian"];
+    // =================================================
+    // ONLY USER / LIBRARIAN CAN REGISTER
+    // =================================================
 
-    const selectedRole = allowedRoles.includes(role)
-      ? role
-      : "user";
+    const allowedRoles = [
+      "user",
+      "librarian",
+    ];
 
-    const normalizedEmail = email.toLowerCase().trim();
+    const selectedRole =
+      allowedRoles.includes(role)
+        ? role
+        : "user";
 
-    const existingUser = await User.findOne({
-      email: normalizedEmail,
-    });
+    // =================================================
+    // NORMALIZE EMAIL
+    // =================================================
+
+    const normalizedEmail =
+      email.toLowerCase().trim();
+
+    // =================================================
+    // CHECK EXISTING USER
+    // =================================================
+
+    const existingUser =
+      await User.findOne({
+        email: normalizedEmail,
+      });
 
     if (existingUser) {
       return res.status(409).json({
@@ -95,7 +141,16 @@ router.post("/register", async (req, res) => {
       });
     }
 
-    const hashedPassword = await bcrypt.hash(password, 10);
+    // =================================================
+    // HASH PASSWORD
+    // =================================================
+
+    const hashedPassword =
+      await bcrypt.hash(password, 10);
+
+    // =================================================
+    // CREATE USER
+    // =================================================
 
     const user = await User.create({
       name: name.trim(),
@@ -105,50 +160,95 @@ router.post("/register", async (req, res) => {
       photoURL: photoURL || "",
     });
 
+    // =================================================
+    // CREATE TOKEN
+    // =================================================
+
     const token = createToken(user);
 
-    res.cookie("token", token, cookieOptions);
+    // =================================================
+    // SAVE TOKEN IN HTTP-ONLY COOKIE
+    // =================================================
 
-    res.status(201).json({
+    res.cookie(
+      "token",
+      token,
+      cookieOptions
+    );
+
+    // =================================================
+    // RESPONSE
+    // =================================================
+
+    return res.status(201).json({
       success: true,
       message: "Registration successful.",
+
       user: publicUser(user),
+
+      // Also return token so frontend can
+      // use Authorization header if needed.
+      token,
     });
   } catch (error) {
-    console.error(error);
+    console.error(
+      "REGISTER ERROR:",
+      error
+    );
 
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
       message: error.message,
     });
   }
 });
 
-// ==============================
+// =====================================================
 // LOGIN
-// ==============================
+// =====================================================
 
 router.post("/login", async (req, res) => {
   try {
-    const { email, password } = req.body;
+    const {
+      email,
+      password,
+    } = req.body;
+
+    // =================================================
+    // VALIDATION
+    // =================================================
 
     if (!email || !password) {
       return res.status(400).json({
         success: false,
-        message: "Email and password are required.",
+        message:
+          "Email and password are required.",
       });
     }
 
-    const user = await User.findOne({
-      email: email.toLowerCase().trim(),
-    });
+    // =================================================
+    // FIND USER
+    // =================================================
+
+    const normalizedEmail =
+      email.toLowerCase().trim();
+
+    const user =
+      await User.findOne({
+        email: normalizedEmail,
+      });
 
     if (!user) {
       return res.status(401).json({
         success: false,
-        message: "Invalid email or password.",
+        message:
+          "Invalid email or password.",
       });
     }
+
+    // =================================================
+    // GOOGLE ACCOUNT CHECK
+    // =================================================
 
     if (!user.password) {
       return res.status(400).json({
@@ -158,35 +258,71 @@ router.post("/login", async (req, res) => {
       });
     }
 
-    const matched = await bcrypt.compare(password, user.password);
+    // =================================================
+    // PASSWORD CHECK
+    // =================================================
+
+    const matched =
+      await bcrypt.compare(
+        password,
+        user.password
+      );
 
     if (!matched) {
       return res.status(401).json({
         success: false,
-        message: "Invalid email or password.",
+        message:
+          "Invalid email or password.",
       });
     }
 
+    // =================================================
+    // CREATE TOKEN
+    // =================================================
+
     const token = createToken(user);
 
-    res.cookie("token", token, cookieOptions);
+    // =================================================
+    // SAVE TOKEN IN COOKIE
+    // =================================================
 
-    res.json({
+    res.cookie(
+      "token",
+      token,
+      cookieOptions
+    );
+
+    // =================================================
+    // RESPONSE
+    // =================================================
+
+    return res.json({
       success: true,
       message: "Login successful.",
+
       user: publicUser(user),
+
+      // IMPORTANT:
+      // Frontend will save this token
+      // and attach it as Bearer token.
+      token,
     });
   } catch (error) {
-    res.status(500).json({
+    console.error(
+      "LOGIN ERROR:",
+      error
+    );
+
+    return res.status(500).json({
       success: false,
       message: error.message,
     });
   }
 });
 
-// ==============================
+// =====================================================
 // GOOGLE LOGIN
-// ==============================
+// =====================================================
 
 router.post("/google", async (req, res) => {
   try {
@@ -204,148 +340,232 @@ router.post("/google", async (req, res) => {
       });
     }
 
-    const normalizedEmail = email.toLowerCase().trim();
+    const normalizedEmail =
+      email.toLowerCase().trim();
 
-    let user = await User.findOne({
-      email: normalizedEmail,
-    });
+    // =================================================
+    // FIND EXISTING USER
+    // =================================================
+
+    let user =
+      await User.findOne({
+        email: normalizedEmail,
+      });
+
+    // =================================================
+    // CREATE NEW GOOGLE USER
+    // =================================================
 
     if (!user) {
-      const allowedRoles = ["user", "librarian"];
+      const allowedRoles = [
+        "user",
+        "librarian",
+      ];
 
-      const selectedRole = allowedRoles.includes(role)
-        ? role
-        : "user";
+      const selectedRole =
+        allowedRoles.includes(role)
+          ? role
+          : "user";
 
       user = await User.create({
-        name: name || "Google User",
+        name:
+          name || "Google User",
+
         email: normalizedEmail,
-        photoURL: photoURL || "",
+
+        photoURL:
+          photoURL || "",
+
         role: selectedRole,
+
         password: null,
       });
     } else {
-      // Keep existing admin/librarian role.
-      // Do not overwrite an existing role during Google login.
-      user.name = name || user.name;
-      user.photoURL = photoURL || user.photoURL;
+      // =================================================
+      // DO NOT OVERWRITE EXISTING ROLE
+      // =================================================
+
+      user.name =
+        name || user.name;
+
+      user.photoURL =
+        photoURL || user.photoURL;
 
       await user.save();
     }
 
+    // =================================================
+    // CREATE TOKEN
+    // =================================================
+
     const token = createToken(user);
 
-    res.cookie("token", token, cookieOptions);
+    // =================================================
+    // COOKIE
+    // =================================================
 
-    res.json({
+    res.cookie(
+      "token",
+      token,
+      cookieOptions
+    );
+
+    // =================================================
+    // RESPONSE
+    // =================================================
+
+    return res.json({
       success: true,
-      message: "Google login successful.",
+      message:
+        "Google login successful.",
+
       user: publicUser(user),
+
+      token,
     });
   } catch (error) {
-    console.error("Google auth error:", error);
+    console.error(
+      "GOOGLE AUTH ERROR:",
+      error
+    );
 
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
       message: error.message,
     });
   }
 });
 
-// ==============================
+// =====================================================
 // LOGOUT
-// ==============================
+// =====================================================
 
 router.post("/logout", (req, res) => {
   res.clearCookie("token", {
     httpOnly: true,
     secure: isProduction,
-    sameSite: isProduction ? "none" : "lax",
+    sameSite:
+      isProduction
+        ? "none"
+        : "lax",
+    path: "/",
   });
 
-  res.json({
+  return res.json({
     success: true,
-    message: "Logged out successfully.",
+    message:
+      "Logged out successfully.",
   });
 });
 
-// ==============================
+// =====================================================
 // CURRENT USER
-// ==============================
+// GET /api/auth/me
+// =====================================================
 
-router.get("/me", verifyToken, async (req, res) => {
-  try {
-    const user = await User.findById(req.user.id).select("-password");
+router.get(
+  "/me",
+  verifyToken,
+  async (req, res) => {
+    try {
+      const user =
+        await User.findById(
+          req.user.id
+        ).select("-password");
 
-    if (!user) {
-      return res.status(404).json({
-        success: false,
-        message: "User not found.",
-      });
-    }
-
-    res.json({
-      success: true,
-      user: publicUser(user),
-    });
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: error.message,
-    });
-  }
-});
-
-// ==============================
-// UPDATE PROFILE
-// ==============================
-
-router.patch("/profile", verifyToken, async (req, res) => {
-  try {
-    const { name, photoURL } = req.body;
-
-    if (!name) {
-      return res.status(400).json({
-        success: false,
-        message: "Name is required.",
-      });
-    }
-
-    const user = await User.findByIdAndUpdate(
-      req.user.id,
-      {
-        name: name.trim(),
-        photoURL: photoURL || "",
-      },
-      {
-        new: true,
-        runValidators: true,
+      if (!user) {
+        return res.status(404).json({
+          success: false,
+          message:
+            "User not found.",
+        });
       }
-    ).select("-password");
 
-    if (!user) {
-      return res.status(404).json({
+      return res.json({
+        success: true,
+        user: publicUser(user),
+      });
+    } catch (error) {
+      console.error(
+        "GET CURRENT USER ERROR:",
+        error
+      );
+
+      return res.status(500).json({
         success: false,
-        message: "User not found.",
+        message: error.message,
       });
     }
-
-    res.json({
-      success: true,
-      message: "Profile updated successfully.",
-      user: publicUser(user),
-    });
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: error.message,
-    });
   }
-});
+);
 
-// ==============================
+// =====================================================
+// UPDATE PROFILE
+// =====================================================
+
+router.patch(
+  "/profile",
+  verifyToken,
+  async (req, res) => {
+    try {
+      const {
+        name,
+        photoURL,
+      } = req.body;
+
+      if (!name) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "Name is required.",
+        });
+      }
+
+      const user =
+        await User.findByIdAndUpdate(
+          req.user.id,
+          {
+            name: name.trim(),
+            photoURL:
+              photoURL || "",
+          },
+          {
+            new: true,
+            runValidators: true,
+          }
+        ).select("-password");
+
+      if (!user) {
+        return res.status(404).json({
+          success: false,
+          message:
+            "User not found.",
+        });
+      }
+
+      return res.json({
+        success: true,
+        message:
+          "Profile updated successfully.",
+        user: publicUser(user),
+      });
+    } catch (error) {
+      console.error(
+        "UPDATE PROFILE ERROR:",
+        error
+      );
+
+      return res.status(500).json({
+        success: false,
+        message: error.message,
+      });
+    }
+  }
+);
+
+// =====================================================
 // ADMIN ROLE CHANGE
-// ==============================
+// =====================================================
 
 router.patch(
   "/users/:id/role",
@@ -353,45 +573,69 @@ router.patch(
   verifyRole("admin"),
   async (req, res) => {
     try {
-      const { role } = req.body;
+      const {
+        role,
+      } = req.body;
 
-      if (!["user", "librarian", "admin"].includes(role)) {
+      if (
+        ![
+          "user",
+          "librarian",
+          "admin",
+        ].includes(role)
+      ) {
         return res.status(400).json({
           success: false,
-          message: "Invalid role.",
+          message:
+            "Invalid role.",
         });
       }
 
-      if (req.params.id === req.user.id) {
+      // Admin cannot change own role
+      if (
+        req.params.id ===
+        req.user.id
+      ) {
         return res.status(400).json({
           success: false,
-          message: "You cannot change your own role.",
+          message:
+            "You cannot change your own role.",
         });
       }
 
-      const user = await User.findByIdAndUpdate(
-        req.params.id,
-        { role },
-        {
-          new: true,
-          runValidators: true,
-        }
-      ).select("-password");
+      const user =
+        await User.findByIdAndUpdate(
+          req.params.id,
+          {
+            role,
+          },
+          {
+            new: true,
+            runValidators: true,
+          }
+        ).select("-password");
 
       if (!user) {
         return res.status(404).json({
           success: false,
-          message: "User not found.",
+          message:
+            "User not found.",
         });
       }
 
-      res.json({
+      return res.json({
         success: true,
-        message: "User role updated successfully.",
+        message:
+          "User role updated successfully.",
         user: publicUser(user),
       });
     } catch (error) {
-      res.status(500).json({
+      console.error(
+        "ROLE UPDATE ERROR:",
+        error
+      );
+
+      return res.status(500).json({
         success: false,
         message: error.message,
       });
